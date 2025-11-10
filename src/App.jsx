@@ -46,6 +46,8 @@ export default function App() {
   const [services, setServices] = useState([])
   const [appointments, setAppointments] = useState([])
 
+  const [availability, setAvailability] = useState({ checking: false, available: null, message: '' })
+
   const [form, setForm] = useState({
     customer_name: '',
     customer_phone: '',
@@ -109,6 +111,35 @@ export default function App() {
     return dt.toISOString()
   }
 
+  // Availability check
+  const checkAvailability = async () => {
+    const startIso = combineDateTime(form.start_date, form.start_time)
+    if (!form.barber_id || !startIso || !duration_min) {
+      setAvailability({ checking: false, available: null, message: '' })
+      return
+    }
+    try {
+      setAvailability({ checking: true, available: null, message: '' })
+      const params = new URLSearchParams({
+        barber_id: form.barber_id,
+        start_time: startIso,
+        duration_min: String(duration_min)
+      })
+      const res = await fetch(`${baseUrl}/api/appointments/check?${params.toString()}`)
+      if (!res.ok) throw new Error('Unable to check availability')
+      const data = await res.json()
+      setAvailability({ checking: false, available: !!data.available, message: data.available ? 'Time is available' : 'Time slot not available' })
+    } catch (e) {
+      setAvailability({ checking: false, available: null, message: 'Unable to check availability' })
+    }
+  }
+
+  // Trigger availability checks when inputs change
+  useEffect(() => {
+    checkAvailability()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.barber_id, form.service_name, form.start_date, form.start_time, duration_min])
+
   const submit = async (e) => {
     e.preventDefault()
     setLoading(true)
@@ -120,6 +151,25 @@ export default function App() {
         setLoading(false)
         return
       }
+
+      // Final availability check before booking
+      const params = new URLSearchParams({
+        barber_id: form.barber_id,
+        start_time: startIso,
+        duration_min: String(duration_min)
+      })
+      const chk = await fetch(`${baseUrl}/api/appointments/check?${params.toString()}`)
+      if (!chk.ok) {
+        throw new Error('Unable to verify availability')
+      }
+      const chkData = await chk.json()
+      if (!chkData.available) {
+        setError('That time was just taken. Please choose another slot.')
+        setLoading(false)
+        await fetchAppointments()
+        return
+      }
+
       const payload = {
         customer_name: form.customer_name,
         customer_phone: form.customer_phone,
@@ -141,6 +191,7 @@ export default function App() {
       await res.json()
       await fetchAppointments()
       setForm(f => ({ ...f, start_date: '', start_time: '', notes: '' }))
+      setAvailability({ checking: false, available: null, message: '' })
     } catch (e) {
       setError(e.message)
     } finally {
@@ -228,6 +279,12 @@ export default function App() {
                 </div>
               </div>
 
+              {availability.message && (
+                <div className={`text-xs rounded px-2 py-1 inline-block ${availability.available === true ? 'bg-green-50 text-green-700 border border-green-200' : availability.available === false ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-gray-50 text-gray-600 border border-gray-200'}`}>
+                  {availability.checking ? 'Checking availability…' : availability.message}
+                </div>
+              )}
+
               <div>
                 <Label htmlFor="notes">Notes (optional)</Label>
                 <Input id="notes" name="notes" placeholder="Any preferences" value={form.notes} onChange={handleChange} />
@@ -237,7 +294,7 @@ export default function App() {
 
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || availability.available === false}
                 className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-md py-2 font-medium transition"
               >
                 {loading ? 'Booking...' : 'Book Appointment'}
