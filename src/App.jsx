@@ -68,10 +68,15 @@ export default function App() {
         fetch(`${baseUrl}/api/services`)
       ])
       const [bData, sData] = await Promise.all([bRes.json(), sRes.json()])
-      setBarbers(bData)
-      setServices(sData)
-      if (!form.barber_id && bData[0]?.id) {
-        setForm(f => ({ ...f, barber_id: bData[0].id }))
+
+      // If a time is selected, auto-filter out barbers that are not available
+      const filteredBarbers = await filterBarbersByAvailability(bData)
+      setBarbers(filteredBarbers)
+
+      setServices(sData.map(s => s.name === 'Haircut' ? { ...s, price: 18 } : s))
+
+      if (!form.barber_id && filteredBarbers[0]?.id) {
+        setForm(f => ({ ...f, barber_id: filteredBarbers[0].id }))
       }
       if (!form.service_name && sData[0]?.name) {
         setForm(f => ({ ...f, service_name: sData[0].name }))
@@ -134,11 +139,43 @@ export default function App() {
     }
   }
 
+  // Filter barbers dynamically based on selected date/time and service duration
+  const filterBarbersByAvailability = async (allBarbers = barbers) => {
+    const startIso = combineDateTime(form.start_date, form.start_time)
+    if (!startIso || !duration_min) return allBarbers
+    try {
+      const checks = await Promise.all(allBarbers.map(async (b) => {
+        const params = new URLSearchParams({
+          barber_id: b.id,
+          start_time: startIso,
+          duration_min: String(duration_min)
+        })
+        const res = await fetch(`${baseUrl}/api/appointments/check?${params.toString()}`)
+        if (!res.ok) return { barber: b, available: true }
+        const data = await res.json()
+        return { barber: b, available: !!data.available }
+      }))
+      const availableBarbers = checks.filter(c => c.available).map(c => c.barber)
+      return availableBarbers
+    } catch {
+      return allBarbers
+    }
+  }
+
   // Trigger availability checks when inputs change
   useEffect(() => {
     checkAvailability()
+    // Also refilter the barbers so the list only shows available ones for the chosen slot
+    ;(async () => {
+      const filtered = await filterBarbersByAvailability()
+      setBarbers(filtered)
+      // If current barber becomes unavailable, switch to first available (if any)
+      if (form.barber_id && !filtered.find(b => b.id === form.barber_id)) {
+        setForm(f => ({ ...f, barber_id: filtered[0]?.id || '' }))
+      }
+    })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.barber_id, form.service_name, form.start_date, form.start_time, duration_min])
+  }, [form.service_name, form.start_date, form.start_time, duration_min])
 
   const submit = async (e) => {
     e.preventDefault()
@@ -257,6 +294,9 @@ export default function App() {
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
                 </Select>
+                {combineDateTime(form.start_date, form.start_time) && (
+                  <p className="text-xs text-gray-500 mt-1">Showing only available barbers for the selected time.</p>
+                )}
               </div>
 
               <div>
@@ -386,7 +426,7 @@ export default function App() {
                 </div>
               ))}
               {barbers.length === 0 && (
-                <p className="text-sm text-gray-500">No barbers yet</p>
+                <p className="text-sm text-gray-500">No barbers available for the selected time</p>
               )}
             </div>
           </Section>
